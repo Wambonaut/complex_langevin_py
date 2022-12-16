@@ -10,11 +10,13 @@ ALPHA=0.0
 #Spin 1 interaction constants
 C0=0.1
 C2=0.05
+ZE_Q=0.0
+ZE=cp.array([ZE_Q,0,ZE_Q])
 
 #dimensionality
 comp=3
 dim=3
-d_space=16
+d_space=32
 d_time=16
 
 #Gas constants
@@ -28,8 +30,9 @@ print(f'BKT Temp: {cp.pi*cp.sqrt(MU/G)}')
 ##create a lattice with d spatial and 1 time dimension (time is 0 axis)
 dims=[comp]+[d_time]+[d_space]*dim
 psi=cp.zeros(dims)+0.0j
-#psi+=cp.random.rand(d_time,d_space,d_space,d_space)*
+psi+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
 psi_conj=cp.zeros(dims)+0.0j
+psi_conj+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
 #psi_conj+=cp.random.rand(d_time,d_space)
 #psi+=cp.sqrt(MU/G)*1
 #psi_conj+=cp.sqrt(MU/G)*1
@@ -103,6 +106,7 @@ for d,m,v in zip(ds,ms,values):
 inds_unique=[]
 factors_unique=[]
 
+
 for s,v in zip(sum_inds,sum_vals):
 	unique,unique_inv=np.unique(s,return_inverse=True,axis=0)
 	f=np.zeros(len(unique))+0.0j
@@ -113,25 +117,70 @@ for s,v in zip(sum_inds,sum_vals):
 	unique_nonzero=unique[np.abs(f)>1e-8]
 	f_nonzero=f[np.abs(f)>1e-8]
 	factors_unique.append(cp.array(f_nonzero))
-	inds_unique.append(unique_nonzero-1)
+	inds_unique.append(unique_nonzero)
 
-
-#print(inds.T,values)
+in1,in2,in3=inds_unique
+in1=cp.array(in1).astype(cp.uint32)
+in2=cp.array(in2).astype(cp.uint32)
+in3=cp.array(in3).astype(cp.uint32)
+f1,f2,f3=factors_unique
+f2=cp.array(f2)
+f1=cp.array(f1)
+f3=cp.array(f3)
 #print(inds_unique,factors_unique)
+@jit.rawkernel()
+def make_Hint(psi,psi_conj,H_int,in1,in2,in3,f1,f2,f3):
+	tidx=jit.blockIdx.x * jit.blockDim.x + jit.threadIdx.x
+	tidy=jit.blockIdx.y * jit.blockDim.y + jit.threadIdx.y
+	tidz=jit.blockIdx.z * jit.blockDim.z + jit.threadIdx.z
+	n_tidx=jit.gridDim.x * jit.blockDim.x
+	n_tidy=jit.gridDim.y * jit.blockDim.y
+	n_tidz=jit.gridDim.z * jit.blockDim.z
+	for t in range(d_time):
+		for x in range(tidx, d_space,n_tidx):
+			for y in range(tidy, d_space,n_tidy):
+				for z in range(tidz, d_space,n_tidz):
+					for in_ind in range(len(in1)):
+						H_intermediate=psi_conj[in1[in_ind,0],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in1[in_ind,1],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in1[in_ind,2],t,x,y,z]
+						H_int[0,t,x,y,z]+=f1[in_ind]*C2*H_intermediate					
+					for in_ind in range(len(in2)):
+						H_intermediate=psi_conj[in2[in_ind,0],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in2[in_ind,1],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in2[in_ind,2],t,x,y,z]
+						H_int[1,t,x,y,z]+=f2[in_ind]*C2*H_intermediate				
+					for in_ind in range(len(in3)):
+						H_intermediate=psi_conj[in3[in_ind,0],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in3[in_ind,1],t,x,y,z]
+						H_intermediate=H_intermediate*psi[in3[in_ind,2],t,x,y,z]
+						H_int[2,t,x,y,z]+=f3[in_ind]*C2*H_intermediate#
 def calculate_drift(psi, psi_conj):
 	psi_conj_adv=cp.roll(psi_conj,-1,axis=time_axis)
 	psi_ret=cp.roll(psi,1,axis=time_axis)
-	rhop=cp.sum(psi_conj*psi_ret,axis=0)
-	rhom=cp.sum(psi_conj_adv*psi,axis=0)
-	H_int=C0*psi_ret*rhop
-	H_int_conj=C0*psi_conj_adv*rhom
+	rho_p=cp.sum(psi_conj*psi_ret,axis=0)
+	rho_m=cp.sum(psi_conj_adv*psi,axis=0)
+	#intra-state-collisions are easy
+	H_int=C0*psi_ret*rho_p
+	H_int_conj=C0*psi_conj_adv*rho_m
+	#cross-scattering and spin mixing
+	##jit compiled is around 30% faster but horrible to debug
+	make_Hint[(8,8,8),(8,8,8)](psi_ret,psi_conj,H_int,in1,in2,in3,f1,f2,f3)
+	make_Hint[(8,8,8),(8,8,8)](psi_conj_adv,psi,H_int_conj,in1,in2,in3,f1,f2,f3)
+	##python method		
+	"""
+	H_int_2=C0*psi_ret*psi_conj*psi_ret
+	H_int_conj_2=C0*psi_conj_adv*psi*psi_conj_adv
+
 	for i in range(comp):
 		for inds,f in zip(inds_unique[i],factors_unique[i]):
-			H_int[i]+=f*C2*psi_conj[inds[0]]*psi_ret[inds[1]]*psi_ret[inds[2]]
-			H_int_conj[i]+=f*C2*psi[inds[0]]*psi_conj_adv[inds[1]]*psi_conj_adv[inds[2]]
-
-	drift=DT*(-d_dt(psi_ret)+EPS*(laplacian_k(psi_ret)+MU*psi_ret-H_int))
-	drift_conj=DT*(d_dt(psi_conj)+EPS*(laplacian_k(psi_conj_adv)+MU*psi_conj_adv-H_int))
+			H_int_2[i]+=f*C2*psi_conj[inds[0]]*psi_ret[inds[1]]*psi_ret[inds[2]]
+			H_int_conj_2[i]+=f*C2*psi[inds[0]]*psi_conj_adv[inds[1]]*psi_conj_adv[inds[2]]
+	print(H_int_2[0,5,5,5])
+	print(H_int[0,5,5,5])
+	"""
+	drift=DT*(-d_dt(psi_ret)+EPS*(laplacian_k(psi_ret)+cp.tensordot(MU+ZE,psi_ret,axes=([0],[0]))-H_int))
+	drift_conj=DT*(d_dt(psi_conj)+EPS*(laplacian_k(psi_conj_adv)+cp.tensordot(MU+ZE,psi_conj_adv,axes=([0],[0]))-H_int))
 	return drift,drift_conj
 
 def time_step(psi,psi_conj,momentum,momentum_conj):
@@ -186,14 +235,13 @@ print(benchmark(laplacian_k, (psi,),n_repeat=5))
 print(benchmark(mean_density, (psi,psi_conj),n_repeat=5))
 print(benchmark(occ_numbers,(psi,psi_conj),n_repeat=5))
 print(benchmark(calculate_drift,(psi,psi_conj),n_repeat=5))
-input()
 momentum=0
 momentum_conj=0
 for i in range(10000000):
 	if i%1000==0:
 		print(i)
 	psi,psi_conj,momentum,momentum_conj=time_step(psi,psi_conj,momentum,momentum_conj)
-	if i>=150000:
+	if i>=100000:
 		ALPHA=0
 		psi_k=cp.fft.fftn(psi, axes=space_axes)
 		psi_k_conj=cp.fft.fftn(psi_conj,axes=space_axes)

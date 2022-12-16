@@ -7,6 +7,7 @@ Arbitrary spatial dimension
 Arbitrary lattice sizes   
 Observables: particle number, momentum spectrum, dispersion    
 CUDA acceleration   
+Spin-1 Spin-Spin and quadratic Zeeman Interaction
    
 ## TODO:  
 Add more Observables, especially arbitrary n-point functions   
