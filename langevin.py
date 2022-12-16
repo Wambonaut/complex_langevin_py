@@ -30,9 +30,9 @@ print(f'BKT Temp: {cp.pi*cp.sqrt(MU/G)}')
 ##create a lattice with d spatial and 1 time dimension (time is 0 axis)
 dims=[comp]+[d_time]+[d_space]*dim
 psi=cp.zeros(dims)+0.0j
-psi+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
+#psi+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
 psi_conj=cp.zeros(dims)+0.0j
-psi_conj+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
+#psi_conj+=cp.random.rand(comp,d_time,d_space,d_space,d_space)
 #psi_conj+=cp.random.rand(d_time,d_space)
 #psi+=cp.sqrt(MU/G)*1
 #psi_conj+=cp.sqrt(MU/G)*1
@@ -49,13 +49,12 @@ measure_grid=cp.abs(cp.prod(cp.cos(cp.pi*m_axes/d_space),axis=0))
 print(measure_grid.shape)
 laplacian_grid=4*cp.sum(cp.sin(cp.pi*m_axes/d_space)**2,axis=0)
 print(laplacian_grid.shape)
-#central time derivative, hope the rolling on GPU is efficient
+#time_derivative
 def d_dt(psi):
 	psi_advanced=cp.roll(psi,-1,axis=time_axis)
-	#psi_retarded=cp.roll(psi,1,axis=time_axis)
 	return (psi_advanced-psi)
 
-"""
+"""#inefficient version of laplacian using kernel convolution
 laplacian_kernel=cp.zeros(([1]+[3]*dim))
 laplacian_kernel[tuple([0]+[1]*dim)]=1
 for d in range(dim):
@@ -72,7 +71,7 @@ def laplacian(psi):
 	return signal.fftconvolve(psib,laplacian_kernel,mode="valid")
 """
 
-#directly implementing using fft is a lot faster (see benchmarks)
+#directly implementing Laplacian using fft is a lot faster (see benchmarks)
 def laplacian_k(psi):
 	psi_k=cp.fft.fftn(psi, axes=space_axes)
 	psi_k*=laplacian_grid
@@ -127,7 +126,9 @@ f1,f2,f3=factors_unique
 f2=cp.array(f2)
 f1=cp.array(f1)
 f3=cp.array(f3)
-#print(inds_unique,factors_unique)
+
+
+##JIT implementation of the spin-spin C2 interaction
 @jit.rawkernel()
 def make_Hint(psi,psi_conj,H_int,in1,in2,in3,f1,f2,f3):
 	tidx=jit.blockIdx.x * jit.blockDim.x + jit.threadIdx.x
@@ -185,6 +186,7 @@ def calculate_drift(psi, psi_conj):
 
 def time_step(psi,psi_conj,momentum,momentum_conj):
 	drift,drift_conj=calculate_drift(psi,psi_conj)
+    #momentum is dumb idea to make initial equlibration faster, probably not worth it so set ALPHA=0
 	momentum=ALPHA*momentum+(1-ALPHA)*drift
 	momentum_conj=ALPHA*momentum_conj+(1-ALPHA)*drift_conj
 	noise=cp.random.normal(0,cp.sqrt(DT),size=dims+[2],dtype=cp.float32).view(cp.complex64).squeeze()
@@ -200,7 +202,7 @@ def mean_density(psi_k, psi_k_conj):
 	rho=cp.sum(psi_k_conj_adv*psi_k*measure_grid,axis=range(1,dim+2))/d_time/d_space**dim
 	return rho
 
-#we create masks for each momentum bin
+#create masks for each momentum bin
 #this way, the binning involves only array multiplications and summations == fast
 N_BINS=d_space
 momentum_grid=cp.sqrt(laplacian_grid)
@@ -229,7 +231,7 @@ occ=[]
 mom_bins=[]
 cache=cp.fft.config.get_plan_cache()
 
-
+#some benchmarks
 print(benchmark(d_dt, (psi,),n_repeat=5))
 print(benchmark(laplacian_k, (psi,),n_repeat=5))
 print(benchmark(mean_density, (psi,psi_conj),n_repeat=5))
@@ -237,11 +239,13 @@ print(benchmark(occ_numbers,(psi,psi_conj),n_repeat=5))
 print(benchmark(calculate_drift,(psi,psi_conj),n_repeat=5))
 momentum=0
 momentum_conj=0
+
+eq_steps=100000
 for i in range(10000000):
 	if i%1000==0:
 		print(i)
 	psi,psi_conj,momentum,momentum_conj=time_step(psi,psi_conj,momentum,momentum_conj)
-	if i>=100000:
+	if i>=eq_steps:
 		ALPHA=0
 		psi_k=cp.fft.fftn(psi, axes=space_axes)
 		psi_k_conj=cp.fft.fftn(psi_conj,axes=space_axes)
