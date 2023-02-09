@@ -8,8 +8,7 @@ Arbitrary lattice sizes
 Observables: particle number, momentum spectrum, dispersion    
 CUDA acceleration   
 Spin-1 Spin-Spin and quadratic Zeeman Interaction
-   
-## TODO:  
-Add more Observables, especially arbitrary n-point functions   
-(Maybe) refactor to OOP   
-Improve GPU acceleration with costum CUDA kernels (already pretty good tho)   
+Mean field calculations in easy plane phase
+Quasiparticle dispersion for easy plane gapless mode
+Automatic processing of parameter files for use in slurm jobs 
+
